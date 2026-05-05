@@ -96,14 +96,14 @@ function Connect-RequiredServices {
     param()
 
     try {
-        Write-Verbose 'Verbinden met Microsoft Teams...'
-        Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
+        Write-Verbose 'Verbinden met Microsoft Teams met device authentication...'
+        Connect-MicrosoftTeams -UseDeviceAuthentication -ErrorAction Stop | Out-Null
     }
     catch {
         throw "Verbinding met Microsoft Teams mislukt. Fout: $($_.Exception.Message)"
     }
 
-    $requiredScopes = @('User.Read.All', 'GroupMember.Read.All')
+    $requiredScopes = @('User.Read.All', 'GroupMember.Read.All', 'Directory.Read.All')
 
     try {
         $ctx = Get-MgContext -ErrorAction SilentlyContinue
@@ -129,8 +129,8 @@ function Connect-RequiredServices {
 
     if ($needGraphConnect) {
         try {
-            Write-Verbose "Verbinden met Microsoft Graph met scopes: $($requiredScopes -join ', ')"
-            Connect-MgGraph -Scopes $requiredScopes -ErrorAction Stop | Out-Null
+            Write-Verbose "Verbinden met Microsoft Graph (device authentication) met scopes: $($requiredScopes -join ', ')"
+            Connect-MgGraph -Scopes $requiredScopes -UseDeviceAuthentication -ContextScope Process -ErrorAction Stop | Out-Null
         }
         catch {
             throw "Verbinding met Microsoft Graph mislukt. Controleer rechten/scopes. Fout: $($_.Exception.Message)"
@@ -149,7 +149,12 @@ function ConvertTo-NormalizedGuidString {
     process {
         if ($null -eq $Value) { return $null }
 
-        $text = [string]$Value
+        try {
+            $text = [string]$Value
+        }
+        catch {
+            return $null
+        }
         if ([string]::IsNullOrWhiteSpace($text)) { return $null }
 
         $text = $text.Trim().Trim('{}').Trim()
@@ -179,7 +184,7 @@ function Get-PossibleIdValuesFromObject {
         }
 
         if ($InputObject -is [string] -or $InputObject -is [Guid]) {
-            $results.Add([string]$InputObject)
+            try { $results.Add([string]$InputObject) } catch {}
             return @($results)
         }
 
@@ -191,19 +196,29 @@ function Get-PossibleIdValuesFromObject {
         )
 
         foreach ($propName in $propCandidates) {
-            $p = $InputObject.PSObject.Properties[$propName]
-            if ($p -and $null -ne $p.Value -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) {
-                $results.Add([string]$p.Value)
+            try {
+                $p = $InputObject.PSObject.Properties[$propName]
+                if ($p -and $null -ne $p.Value -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) {
+                    $results.Add([string]$p.Value)
+                }
+            }
+            catch {
+                continue
             }
         }
 
         if ($results.Count -eq 0) {
-            foreach ($p in $InputObject.PSObject.Properties) {
-                if ($p.Name -match '(?i)(id|guid|principalname|upn|sip|mail)') {
-                    if ($null -ne $p.Value -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) {
-                        $results.Add([string]$p.Value)
+            try {
+                foreach ($p in $InputObject.PSObject.Properties) {
+                    if ($p.Name -match '(?i)(id|guid|principalname|upn|sip|mail)') {
+                        if ($null -ne $p.Value -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) {
+                            $results.Add([string]$p.Value)
+                        }
                     }
                 }
+            }
+            catch {
+                # negeer parsingfouten; functie blijft best-effort
             }
         }
 
@@ -286,7 +301,7 @@ function Get-AllTeamsCallQueues {
     while ($true) {
         Write-Verbose "Ophalen call queues: -First $pageSize -Skip $skip"
         try {
-            $page = @(Get-CsCallQueue -First $pageSize -Skip $skip -ErrorAction Stop)
+            $page = @(Get-CsCallQueue -First $pageSize -Skip $skip -WarningAction SilentlyContinue -ErrorAction Stop)
         }
         catch {
             throw "Kon call queues niet ophalen met Get-CsCallQueue. Fout: $($_.Exception.Message)"
